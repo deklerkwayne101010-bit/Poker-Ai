@@ -1,11 +1,11 @@
-export const dynamic = 'force-dynamic';
+import 'dotenv/config';
 
 import type { AnalysisInput, Position, GameType, OpponentType } from '@/lib/poker/engine';
 import { analyzePokerHand } from '@/lib/poker/engine';
 import { NextRequest, NextResponse } from 'next/server';
-import type { Recommendation, SPRInfo } from '@/lib/poker/engine';
+import { getAIReasoning, type AIRecommendationInput, type AIResponse } from '@/lib/ai/openAI';
 
-type AnalysisResult = Recommendation & { equity: number; potOddsPct: number; spr: number; sprInfo: SPRInfo; positionAdv: number };
+type AnalysisResult = Record<string, unknown>;
 
 function validateInput(body: Record<string, unknown>): string | null {
   if (!Array.isArray(body.heroCards) || body.heroCards.length === 0)
@@ -38,9 +38,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json() as Record<string, unknown>;
 
     const error = validateInput(body);
-    if (error) {
-      return NextResponse.json({ error }, { status: 400 });
-    }
+    if (error) return NextResponse.json({ error }, { status: 400 });
 
     const input: AnalysisInput = {
       heroCards: body.heroCards as string[],
@@ -52,15 +50,78 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       heroStack: body.heroStack as number,
       effStack: body.effStack as number,
       activeOpponents: body.activeOpponents as number,
-      opponentPositions: body.opponentPositions as Position[],
+      opponentPositions: (body.opponentPositions ?? []) as Position[],
       opponentType: body.opponentType as OpponentType,
       tournamentM: body.tournamentM as number,
       dealerButton: body.dealerButton as number,
     };
 
-    const result: AnalysisResult = analyzePokerHand(input);
+    /* ── STEP 1: Deterministic engine (source of truth) ── */
+    const engineResult = analyzePokerHand(input);
 
-    return NextResponse.json(result, { status: 200 });
+    /* ── STEP 2: OpenAI GPT-5.1-mini — best-effort AI reasoning ── */
+    let aiResponse: AIResponse | null = null;
+    let aiErr: { stage: string; reason: string } | null = null;
+
+    try {
+      const aiInput: AIRecommendationInput = {
+        action:         engineResult.action,
+        confidence:     engineResult.confidence,
+        spr:            engineResult.spr,
+        posAdv:         engineResult.positionAdv,
+        equity:         engineResult.equity,
+        potOdds:        engineResult.potOddsPct,
+        gameType:       input.gameType === 'TOURNAMENT' ? 'TOURNAMENT' : 'CASH',
+        opponentType:   input.opponentType,
+        activeOpponents: input.activeOpponents,
+        board:          input.boardCards,
+        heroCards:      input.heroCards,
+        amountToCall:   input.amountToCall,
+        betSize:        engineResult.betSize,
+        reasoning:      engineResult.reasoning,
+      };
+      aiResponse = await getAIReasoning(aiInput);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : 'Unknown error';
+      aiErr = { stage: 'openai', reason };
+    }
+
+    /* ── STEP 3: Merge engine + AI into final response ── */
+    const response: AnalysisResult = {
+      /* ── deterministic engine output ── */
+      action:      engineResult.action,
+      confidence:  engineResult.confidence,
+      ev:          engineResult.ev,
+      risk:        engineResult.risk,
+      betSize:     engineResult.betSize,
+      reasoning:   engineResult.reasoning,
+      summary:     engineResult.summary,
+      /* ── metrics ── */
+      equity:      engineResult.equity,
+      potOddsPct:  engineResult.potOddsPct,
+      spr:         engineResult.spr,
+      sprLabel:    engineResult.sprInfo.label,
+      positionAdv: engineResult.positionAdv,
+      /* ── AI reasoning (best-effort) ── */
+      ...(aiResponse
+        ? {
+            aiReasoning:  aiResponse.reasoning,
+            aiAction:     aiResponse.action,
+            aiConfidence: aiResponse.confidence,
+            aiEv:         aiResponse.ev,
+            aiRisk:       aiResponse.risk,
+            aiBetSize:    aiResponse.bet_size,
+            aiUsed:       true,
+          }
+        : {
+            aiReasoning: engineResult.reasoning,
+            aiUsed:      false,
+          }),
+      /* ── error info if AI failed ── */
+      ...(aiErr ? { aiError: aiErr } : {}),
+    };
+
+    return NextResponse.json(response, { status: 200 });
   } catch (err) {
     return NextResponse.json(
       { error: (err as Error).message ?? 'Internal server error' },
