@@ -1,13 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  /* Turbopack is used by `next dev` only (dev-only, not in builds) */
   turbopack: {
     root: __dirname,
   },
-  /* 'standalone' guarantees Next.js outputs a self-contained
-     server + static assets directory that Vercel's builder always
-     picks up correctly regardless of lockfile layout. */
-  output: 'standalone',
 };
 
 export default nextConfig;
