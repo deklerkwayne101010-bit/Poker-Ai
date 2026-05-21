@@ -1,11 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* Pin Turbopack root to this directory so Vercel's lockfile
-     root-detection does not pick up the parent home dir. */
   turbopack: {
     root: __dirname,
   },
+  /* 'standalone' guarantees Next.js outputs a self-contained
+     server + static assets directory that Vercel's builder always
+     picks up correctly regardless of lockfile layout. */
+  output: 'standalone',
 };
 
 export default nextConfig;
